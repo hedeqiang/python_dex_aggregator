@@ -1,7 +1,7 @@
 import logging
 import logging.config
 from typing import Optional
-from config.settings import LOGGING_CONFIG
+from dex_aggregator.config.settings import LOGGING_CONFIG
 
 # 配置日志
 logging.config.dictConfig(LOGGING_CONFIG)

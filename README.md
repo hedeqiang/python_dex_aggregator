@@ -20,10 +20,14 @@
 ### 使用方法
 #### 基本用法
 
+##### 安装
+```bash
+pip install dex-aggregator
+```
+
 ##### 初始化服务
 ```php
-from services.quote import QuoteService
-from services.swap import SwapService
+from dex_aggregator import QuoteService, SwapService
 
 quote_service = QuoteService()
 swap_service = SwapService()

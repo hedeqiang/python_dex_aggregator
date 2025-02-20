@@ -1,8 +1,8 @@
 import json
 import os
 from typing import Dict
-from core.exceptions import ConfigError
-from utils.logger import get_logger
+from dex_aggregator.core.exceptions import ConfigError
+from dex_aggregator.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
@@ -21,7 +21,6 @@ class ABIHelper:
     
     def _load_abis(self):
         """加载所有ABI文件"""
-        # 修改为从core/abis目录加载
         current_dir = os.path.dirname(os.path.dirname(__file__))
         abi_dir = os.path.join(current_dir, 'core', 'abis')
         

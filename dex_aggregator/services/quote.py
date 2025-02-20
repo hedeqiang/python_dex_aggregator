@@ -1,8 +1,8 @@
-from typing import Dict, Optional
-from providers.okx.client import OKXClient
-from utils.web3_helper import Web3Helper
-from utils.logger import get_logger
-from config.settings import NATIVE_TOKENS
+from typing import Dict
+from dex_aggregator.providers.okx.client import OKXClient
+from dex_aggregator.utils.web3_helper import Web3Helper
+from dex_aggregator.utils.logger import get_logger
+from dex_aggregator.config.settings import NATIVE_TOKENS
 
 logger = get_logger(__name__)
 

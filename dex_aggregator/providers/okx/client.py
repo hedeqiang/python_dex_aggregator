@@ -1,4 +1,3 @@
-import time
 import hmac
 import base64
 import requests
@@ -6,9 +5,9 @@ from typing import Dict, Optional
 from urllib.parse import urlencode
 from datetime import datetime, timezone
 
-from core.exceptions import ProviderError
-from config.settings import API_CONFIG
-from utils.logger import get_logger
+from dex_aggregator.core.exceptions import ProviderError
+from dex_aggregator.config.settings import API_CONFIG
+from dex_aggregator.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

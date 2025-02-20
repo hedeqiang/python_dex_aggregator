@@ -1,4 +1,4 @@
-eth_typing==5.1.0
-python-dotenv==1.0.1
-Requests==2.32.3
-web3==7.8.0
+eth-typing>=5.1.0
+python-dotenv>=1.0.1
+requests>=2.32.3
+web3>=7.8.0

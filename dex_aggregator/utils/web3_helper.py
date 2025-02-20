@@ -1,13 +1,11 @@
 from web3 import Web3
 from typing import Dict, Optional, Union, List
-from config.settings import WEB3_CONFIG
-from core.exceptions import ConfigError
-from eth_typing import ChecksumAddress, HexStr
+from dex_aggregator.config.settings import WEB3_CONFIG
+from dex_aggregator.core.exceptions import ConfigError
 from web3.exceptions import ContractLogicError
-from utils.abi_helper import ABIHelper
-from utils.logger import get_logger
+from dex_aggregator.utils.abi_helper import ABIHelper
+from dex_aggregator.utils.logger import get_logger
 from decimal import Decimal
-from web3.types import TxParams, TxReceipt, BlockData
 
 logger = get_logger(__name__)
 
