@@ -11,7 +11,7 @@ setup(
     description="A Python client for interacting with DEX aggregators",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/hedeqiang/dex_aggregator",
+    url="https://github.com/hedeqiang/python_dex_aggregator",
     packages=find_packages(),
     package_data={
         "dex_aggregator": ["core/abis/*.json"],
