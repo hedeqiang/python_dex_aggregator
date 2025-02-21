@@ -12,51 +12,61 @@ class SwapService:
         self.okx_client = OKXClient()
         self.wallet_config = WALLET_CONFIG["default"]  # 使用默认钱包配置
 
-    def check_and_approve(self, chain_id: str, token_address: str, owner_address: str, amount: str) -> Optional[str]:
-        """检查授权额度并在需要时发起授权"""
+    def check_and_approve(self, chain_id: str, token_address: str, owner_address: str, amount: int) -> Optional[str]:
+        """检查并处理代币授权"""
         try:
             web3_helper = Web3Helper.get_instance(chain_id)
-
-            # 1. 获取授权地址
+            
+            # 1. 获取授权交易数据
             approve_data = self.okx_client.get_approve_transaction({
                 "chainId": chain_id,
                 "tokenContractAddress": token_address,
-                "approveAmount": amount
+                "approveAmount": str(amount)
             })
-
-            spender_address = approve_data["data"][0]["spenderAddress"]
-
-            # 2. 检查当前授权额度
-            current_allowance = web3_helper.get_allowance(
-                token_address=token_address,
-                owner_address=owner_address,
-                spender_address=spender_address
-            )
-
-            # 3. 如果授权额度不足，发起授权交易
-            if current_allowance < int(amount):
+            logger.debug(f"approve_data: {approve_data}")
+            
+            # 2. 从返回数据中获取 spender 地址
+            spender_address = approve_data["data"][0]["dexContractAddress"]
+            
+            # 3. 检查当前授权额度
+            current_allowance = web3_helper.get_allowance(token_address, owner_address, spender_address)
+            
+            # 4. 如果当前授权额度小于需要的金额，则进行授权
+            if current_allowance < amount:
                 logger.info(f"Current allowance {current_allowance} is less than required amount {amount}, approving...")
-
-                tx_data = approve_data["data"][0]
-                gas_price = web3_helper.web3.eth.gas_price
-                nonce = web3_helper.web3.eth.get_transaction_count(owner_address)
-
-                transaction = {
-                    "nonce": nonce,
-                    "to": token_address,
-                    "gasPrice": int(gas_price * 1.5),
-                    "gas": int(int(tx_data["gasLimit"]) * 1.5),
-                    "data": tx_data["data"],
-                    "value": 0,
-                    "chainId": int(chain_id)
+                
+                # 获取钱包私钥
+                wallet = WALLET_CONFIG.get("default")
+                if not wallet or "private_key" not in wallet:
+                    raise ValueError("Wallet private key not found")
+                
+                # 构建授权交易
+                contract = web3_helper.web3.eth.contract(
+                    address=web3_helper.web3.to_checksum_address(token_address),
+                    abi=web3_helper.abi_helper.get_abi('erc20')
+                )
+                
+                # 准备交易参数
+                tx_params = {
+                    'from': owner_address,
+                    'nonce': web3_helper.web3.eth.get_transaction_count(owner_address),
+                    'gasPrice': int(approve_data["data"][0]["gasPrice"]),
+                    'gas': int(approve_data["data"][0]["gasLimit"]),
                 }
-
-                tx_hash = web3_helper.send_transaction(transaction, self.wallet_config["private_key"])
+                
+                # 构建授权交易
+                approve_tx = contract.functions.approve(
+                    web3_helper.web3.to_checksum_address(spender_address),
+                    amount
+                ).build_transaction(tx_params)
+                
+                # 发送交易
+                tx_hash = web3_helper.send_transaction(approve_tx, wallet["private_key"])
                 logger.info(f"Approval transaction sent: {tx_hash}")
                 return tx_hash
-
+                
             return None
-
+            
         except Exception as e:
             logger.error(f"Failed to check and approve: {str(e)}")
             raise
@@ -139,7 +149,7 @@ class SwapService:
                     chain_id=chain_id,
                     token_address=from_token,
                     owner_address=user_address,
-                    amount=raw_amount
+                    amount=int(raw_amount)
                 )
 
                 if approve_tx:
