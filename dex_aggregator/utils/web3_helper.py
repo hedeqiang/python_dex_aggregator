@@ -1,4 +1,4 @@
-from web3 import Web3
+from web3 import Web3, HTTPProvider
 from typing import Dict, Optional, Union, List
 from dex_aggregator.config.settings import WEB3_CONFIG
 from dex_aggregator.core.exceptions import ConfigError
@@ -6,6 +6,7 @@ from web3.exceptions import ContractLogicError
 from dex_aggregator.utils.abi_helper import ABIHelper
 from dex_aggregator.utils.logger import get_logger
 from decimal import Decimal
+from web3.middleware import ExtraDataToPOAMiddleware
 
 logger = get_logger(__name__)
 
@@ -18,7 +19,12 @@ class Web3Helper:
             raise ConfigError(f"Chain ID {chain_id} not supported")
         
         self.chain_id = chain_id
-        self.web3 = Web3(Web3.HTTPProvider(WEB3_CONFIG["providers"][chain_id]))
+        self.web3 = Web3(HTTPProvider(WEB3_CONFIG["providers"][chain_id]))
+        
+        # 为 BSC 等 POA 链添加中间件
+        if chain_id in ["56", "97"]:  # BSC 主网和测试网
+            self.web3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
+        
         self.abi_helper = ABIHelper.get_instance()
 
     @classmethod

@@ -2,13 +2,15 @@ from typing import Dict, Type
 from .interfaces import IDexProvider
 from ..providers.okx.provider import OKXProvider
 from ..providers.okx.solana_provider import OKXSolanaProvider
+from ..providers.uniswap.provider import UniswapProvider
 
 class DexFactory:
     """DEX 工厂类"""
     
     _providers: Dict[str, Type[IDexProvider]] = {
         "okx": OKXProvider,
-        "okx_solana": OKXSolanaProvider
+        "okx_solana": OKXSolanaProvider,
+        "uniswap": UniswapProvider
     }
     
     @classmethod

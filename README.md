@@ -2,6 +2,12 @@
 
 一个用于与去中心化交易所聚合器交互的 Python 客户端,支持多链交易和代币兑换。
 
+> 暂时不建议在生产环境中使用（会有破坏性更新操作）,仅供学习和研究使用。
+
+[![PyPI version](https://badge.fury.io/py/dex-aggregator.svg)](https://badge.fury.io/py/dex-aggregator)
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![GitHub issues](https://img.shields.io/github/issues/hedeqiang/python_dex_aggregator.svg)](
+
 ## 特性
 
 - 多链支持 (Ethereum, BSC, Polygon, Arbitrum, Optimism, Avalanche)

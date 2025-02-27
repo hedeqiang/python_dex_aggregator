@@ -22,6 +22,3 @@ tx_hash = dex.swap(
     amount="0.0001",
     recipient_address="ATEhXjPVGaBUFVMyvCWETS5R9ZPAh7ke6SX2tdsMqC5f",
 )
-
-# print(f"Transaction hash: {tx_hash}")
-# print(f"Explorer URL: https://solscan.io/tx/{tx_hash}")

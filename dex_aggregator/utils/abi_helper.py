@@ -28,18 +28,24 @@ class ABIHelper:
             logger.error(f"ABI directory not found: {abi_dir}")
             raise ConfigError(f"ABI directory not found: {abi_dir}")
             
-        for filename in os.listdir(abi_dir):
-            if filename.endswith('.json'):
-                file_path = os.path.join(abi_dir, filename)
-                contract_name = filename[:-5]  # 移除.json后缀
-                
-                try:
-                    with open(file_path, 'r', encoding='utf-8') as f:
-                        self._abis[contract_name] = json.load(f)
-                        logger.debug(f"Loaded ABI for {contract_name} from {file_path}")
-                except Exception as e:
-                    logger.error(f"Failed to load ABI file {file_path}: {str(e)}")
-                    raise ConfigError(f"Failed to load ABI file {file_path}: {str(e)}")
+        for root, dirs, files in os.walk(abi_dir):
+            for filename in files:
+                if filename.endswith('.json'):
+                    file_path = os.path.join(root, filename)
+                    # 获取相对于abi_dir的路径
+                    relative_path = os.path.relpath(file_path, abi_dir)
+                    # 移除.json后缀
+                    contract_name = os.path.splitext(relative_path)[0]
+                    # 将路径分隔符替换为/
+                    contract_name = contract_name.replace(os.path.sep, '/')
+                    
+                    try:
+                        with open(file_path, 'r', encoding='utf-8') as f:
+                            self._abis[contract_name] = json.load(f)
+                            logger.debug(f"Loaded ABI for {contract_name} from {file_path}")
+                    except Exception as e:
+                        logger.error(f"Failed to load ABI file {file_path}: {str(e)}")
+                        raise ConfigError(f"Failed to load ABI file {file_path}: {str(e)}")
     
     def get_abi(self, contract_name: str) -> list:
         """获取指定合约的ABI"""
