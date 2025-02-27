@@ -16,8 +16,7 @@ class IDexProvider(ABC):
         pass
     
     @abstractmethod
-    def swap(self, chain_id: str, from_token: str,
-                    to_token: str, amount: str, **kwargs) -> str:
+    def swap(self, chain_id: str, from_token: str,to_token: str, amount: str, recipient_address: Optional[str] = None,  slippage: str = "0.03", **kwargs) -> str:
         """执行兑换"""
         pass
     

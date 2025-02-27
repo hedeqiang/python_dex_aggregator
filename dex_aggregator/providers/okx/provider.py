@@ -37,8 +37,7 @@ class OKXProvider(IDexProvider):
             logger.error(f"Failed to convert amount {amount} for token {token_address}: {str(e)}")
             raise
 
-    def get_quote(self, chain_id: str, from_token: str, 
-                  to_token: str, amount: str, **kwargs) -> Dict:
+    def get_quote(self, chain_id: str, from_token: str,  to_token: str, amount: str, **kwargs) -> Dict:
         """获取报价"""
         try:
             web3_helper = self._get_web3_helper(chain_id)
@@ -105,8 +104,8 @@ class OKXProvider(IDexProvider):
             logger.error(f"Failed to check and approve: {str(e)}")
             raise
 
-    def swap(self, chain_id: str, from_token: str,
-                    to_token: str, amount: str, **kwargs) -> str:
+    def swap(self, chain_id: str, from_token: str, to_token: str, amount: str,
+             recipient_address: Optional[str] = None,slippage: str = "0.03", **kwargs) -> str:
         """执行兑换"""
         try:
             web3_helper = self._get_web3_helper(chain_id)
@@ -133,6 +132,9 @@ class OKXProvider(IDexProvider):
                 "userWalletAddress": user_address,
                 **kwargs
             }
+
+            if recipient_address:
+                params["swapReceiverAddress"] = recipient_address
             
             swap_data = self.client.get_swap(params)
             tx_info = swap_data["data"][0]["tx"]

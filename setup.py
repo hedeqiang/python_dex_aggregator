@@ -21,6 +21,9 @@ setup(
         "python-dotenv>=1.0.1",
         "requests>=2.32.3",
         "web3>=7.8.0",
+        "solders>=0.19.0",
+        "solana>=0.30.2",
+        "base58>=2.1.1",
     ],
     classifiers=[
         "Development Status :: 3 - Alpha",

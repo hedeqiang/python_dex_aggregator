@@ -93,6 +93,11 @@ WALLET_ADDRESS=your_wallet_address
 
 # Log Level (DEBUG, INFO, WARNING, ERROR)
 LOG_LEVEL=INFO
+
+# Solana Config
+SOLANA_RPC_URL=https://api.mainnet-beta.solana.com
+SOLANA_WALLET_ADDRESS=your_solana_wallet_address
+SOLANA_WALLET_PRIVATE_KEY=your_solana_wallet_private_key
 ```
 
 ### Web3 Provider 配置

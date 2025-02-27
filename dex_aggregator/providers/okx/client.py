@@ -101,7 +101,6 @@ class OKXClient:
             
         except requests.exceptions.RequestException as e:
             logger.error(f"Request failed: {str(e)}")
-            logger.error(f"Response: {response.text if hasattr(response, 'text') else 'No response'}")
             raise ProviderError(f"OKX API request failed: {str(e)}")
 
     def get_supported_chains(self, chain_id: Optional[str] = None) -> Dict:

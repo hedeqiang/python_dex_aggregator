@@ -24,6 +24,7 @@ WEB3_CONFIG = {
         "42161": os.getenv("ARBITRUM_RPC_URL"),
         "10": os.getenv("OPTIMISM_RPC_URL"),
         "43114": os.getenv("AVALANCHE_RPC_URL"),
+        "501": os.getenv("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com")
     }
 }
 
@@ -32,6 +33,10 @@ WALLET_CONFIG = {
     "default": {
         "address": os.getenv("DEFAULT_WALLET_ADDRESS"),
         "private_key": os.getenv("DEFAULT_WALLET_PRIVATE_KEY")
+    },
+    "solana": {
+        "address": os.getenv("SOLANA_WALLET_ADDRESS"),
+        "private_key": os.getenv("SOLANA_WALLET_PRIVATE_KEY")
     }
 }
 
