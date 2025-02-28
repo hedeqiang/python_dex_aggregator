@@ -137,13 +137,12 @@ class UniswapClient:
                 'sqrtPriceLimitX96': 0
             }
 
-            # 构建交易
+            # 构建基础交易参数
             tx_params = {
                 'from': self.web3.to_checksum_address(params["userWalletAddress"]),
                 'value': amount_in if token_in == self.router_contract.functions.WETH9().call() else 0,
                 'nonce': self.web3.eth.get_transaction_count(params["userWalletAddress"]),
-                'gas': 300000,  # TODO: 优化 gas
-                'gasPrice': self.web3.eth.gas_price
+                'chainId': int(self.chain_id)
             }
 
             # 获取交易数据
@@ -151,7 +150,35 @@ class UniswapClient:
                 swap_params
             ).build_transaction(tx_params)
 
-            return tx
+            # 估算 gas
+            try:
+                gas_estimate = self.router_contract.functions.exactInputSingle(
+                    swap_params
+                ).estimate_gas({
+                    'from': self.web3.to_checksum_address(params["userWalletAddress"]),
+                    'value': amount_in if token_in == self.router_contract.functions.WETH9().call() else 0
+                })
+                gas = int(gas_estimate * 1.2)  # 增加 20% gas 余量
+            except Exception as e:
+                logger.warning(f"Failed to estimate gas, using default: {str(e)}")
+                gas = 300000  # 使用默认值
+
+            # 获取 gas price
+            try:
+                gas_price = self.web3.eth.gas_price
+            except Exception as e:
+                logger.warning(f"Failed to get gas price, using default: {str(e)}")
+                gas_price = self.web3.to_wei('5', 'gwei')  # 使用默认值
+
+            return {
+                "from": params["userWalletAddress"],
+                "to": self.router_address,
+                "data": tx["data"],
+                "value": str(amount_in) if token_in == self.router_contract.functions.WETH9().call() else "0",
+                "gas": str(gas),
+                "gasPrice": str(gas_price),
+                "chainId": int(self.chain_id)
+            }
 
         except Exception as e:
             logger.error(f"Failed to get swap data: {str(e)}")

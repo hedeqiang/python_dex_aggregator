@@ -176,10 +176,22 @@ class UniswapProvider(IDexProvider):
             if recipient:
                 params['recipient'] = recipient
             
-            tx = self.client.get_swap_data(params)
+            swap_data = self.client.get_swap_data(params)
+            
+            # 发送交易
+            transaction = {
+                "from": user_address,
+                "to": swap_data["to"],
+                "value": int(swap_data["value"]),
+                "gas": int(swap_data["gas"]),
+                "gasPrice": int(swap_data["gasPrice"]),
+                "data": swap_data["data"],
+                "chainId": int(chain_id),
+                "nonce": self._web3_helper.web3.eth.get_transaction_count(user_address)  # 添加 nonce
+            }
             
             tx_hash = self._web3_helper.send_transaction(
-                tx,
+                transaction, 
                 self.wallet_config["private_key"]
             )
             logger.info(f"Swap transaction sent: {tx_hash}")
