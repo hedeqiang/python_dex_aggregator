@@ -8,13 +8,10 @@
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.6%2B-blue)](https://www.python.org/downloads/)
 [![GitHub issues](https://img.shields.io/github/issues/hedeqiang/python_dex_aggregator)](https://github.com/hedeqiang/python_dex_aggregator/issues)
-[![GitHub forks](https://img.shields.io/github/forks/hedeqiang/python_dex_aggregator)](https://github.com/hedeqiang/python_dex_aggregator/network)
-[![GitHub stars](https://img.shields.io/github/stars/hedeqiang/python_dex_aggregator)](https://github.com/hedeqiang/python_dex_aggregator)
-
 
 ## 特性
 
-- 多链支持 (Ethereum, BSC, Polygon, Arbitrum, Optimism, Avalanche)
+- 多链支持 (Ethereum, BSC, Polygon, Arbitrum, Optimism, Avalanche, Solana)
 - 工厂模式设计,易于扩展
 - 完整的错误处理和日志记录
 - Web3 工具集成
