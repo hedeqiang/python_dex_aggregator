@@ -5,7 +5,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="dex-aggregator",
-    version="0.3.1",
+    version="0.4.0",
     author="hedeqiang",
     author_email="laravel_code@163.com",
     description="A Python client for interacting with DEX aggregators",
