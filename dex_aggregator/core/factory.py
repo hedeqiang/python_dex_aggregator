@@ -4,6 +4,7 @@ from ..providers.okx.provider import OKXProvider
 from ..providers.okx.solana_provider import OKXSolanaProvider
 from ..providers.pancakeswap.provider import PancakeSwapProvider
 from ..providers.uniswap.provider import UniswapProvider
+from ..providers.raydium.provider import RaydiumProvider
 
 class DexFactory:
     """DEX 工厂类"""
@@ -12,7 +13,8 @@ class DexFactory:
         "okx": OKXProvider,
         "okx_solana": OKXSolanaProvider,
         "uniswap": UniswapProvider,
-        "pancakeswap": PancakeSwapProvider
+        "pancakeswap": PancakeSwapProvider,
+        "raydium": RaydiumProvider
     }
     
     @classmethod
