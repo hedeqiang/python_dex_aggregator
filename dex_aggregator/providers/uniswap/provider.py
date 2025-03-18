@@ -13,7 +13,7 @@ logger = get_logger(__name__)
 class UniswapProvider(IDexProvider):
     """Uniswap DEX Provider 实现"""
 
-    SUPPORTED_CHAINS = ["1", "56", "137", "42161", "10"]  # 支持的链ID
+    SUPPORTED_CHAINS = ["1", "56", "137", "42161", "10", "43114", "8453", "81457", "42220", "480", "324", "7777777"]  # 支持的链ID
     MAX_UINT256 = 2**256 - 1
 
     def __init__(self):
