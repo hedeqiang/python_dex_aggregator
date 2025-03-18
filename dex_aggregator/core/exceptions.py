@@ -20,4 +20,7 @@ class SwapError(DexAggregatorException):
 class ConfigError(DexAggregatorException):
     """配置相关错误"""
     pass
- 
+
+class ValidationError(DexAggregatorException):
+    """校验相关错误"""
+    pass
