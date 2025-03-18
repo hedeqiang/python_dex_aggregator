@@ -4,18 +4,18 @@ from dex_aggregator.providers.raydium.constants import WSOL_MINT
 # 创建 Raydium Provider 实例
 dex = DexFactory.create_provider("raydium")
 
-# 获取报价 (SOL -> USDC)
-# SOL 会自动转换为 wSOL
-quote = dex.get_quote(
-    chain_id="501",  # Solana
-    from_token="11111111111111111111111111111111",  # SOL (会自动转换为 wSOL)
-    to_token="EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",  # USDC
-    amount="0.001",
-    slippage="0.5"  # 0.5% 滑点
-)
-
-print("Quote details:")
-print(quote)
+# # 获取报价 (SOL -> USDC)
+# # SOL 会自动转换为 wSOL
+# quote = dex.get_quote(
+#     chain_id="501",  # Solana
+#     from_token="11111111111111111111111111111111",  # SOL (会自动转换为 wSOL)
+#     to_token="EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",  # USDC
+#     amount="0.001",
+#     slippage="0.5"  # 0.5% 滑点
+# )
+#
+# print("Quote details:")
+# print(quote)
 
 # # 也可以直接使用 wSOL
 # quote_wsol = dex.get_quote(
