@@ -1,11 +1,13 @@
-from typing import Dict, Optional, Any
+from typing import Dict, Optional, List, Union, Any
 from decimal import Decimal
-import re
+from eth_typing import ChecksumAddress
+
+from web3 import Web3
 from ...core.interfaces import IDexProvider
 from ...core.exceptions import ValidationError, ProviderError
+from ...utils.logger import get_logger
 from ...utils.web3_helper import Web3Helper
 from ...config.settings import WALLET_CONFIG, NATIVE_TOKENS
-from ...utils.logger import get_logger
 from .client import UniswapClient
 
 logger = get_logger(__name__)
@@ -15,79 +17,114 @@ class UniswapProvider(IDexProvider):
 
     SUPPORTED_CHAINS = ["1", "56", "137", "42161", "10", "43114", "8453", "81457", "42220", "480", "324", "7777777"]  # 支持的链ID
     MAX_UINT256 = 2**256 - 1
-
+    
     def __init__(self):
-        self.chain_id = "1"  # 默认使用以太坊主网
-        self._web3_helper = Web3Helper.get_instance(self.chain_id)
-        self._client = UniswapClient(self._web3_helper.web3, self.chain_id)
-        self.wallet_config = WALLET_CONFIG["default"]
+        self._client = None
+        self._web3_helper = None
+        self.wallet_config = {}
+        
+    def init_provider(self, chain_id: str) -> None:
+        """初始化Uniswap提供者
 
+        Args:
+            chain_id (str): 链ID
+        """
+        try:
+            if chain_id not in self.SUPPORTED_CHAINS:
+                raise ValidationError(f"Unsupported chain_id: {chain_id}. Must be one of {self.SUPPORTED_CHAINS}")
+                
+            logger.info(f"Initializing Uniswap provider for chain ID: {chain_id}")
+            
+            # 初始化Web3Helper
+            self._web3_helper = Web3Helper.get_instance(chain_id)
+            
+            # 初始化UniswapClient
+            self._client = UniswapClient(self._web3_helper.web3, chain_id)
+            
+            # 设置钱包配置
+            self.wallet_config = WALLET_CONFIG.get("default", {})
+            
+            logger.info(f"Uniswap provider initialized successfully for chain ID: {chain_id}")
+        except Exception as e:
+            logger.error(f"Failed to initialize Uniswap provider: {str(e)}")
+            raise ProviderError(f"Provider initialization failed: {str(e)}")
+        
     @property
     def client(self):
+        if not self._client:
+            raise ProviderError("Provider not initialized, call init_provider first")
         return self._client
-
+        
     def _validate_chain_id(self, chain_id: str) -> str:
-        """验证链ID并在必要时更新客户端"""
-        if not chain_id or chain_id not in self.SUPPORTED_CHAINS:
-            supported_chains = ", ".join(self.SUPPORTED_CHAINS)
-            raise ValidationError(f"Unsupported chain ID: {chain_id}. Supported chains: {supported_chains}")
-
-        # 如果链ID变化，重新初始化客户端
-        if chain_id != self.chain_id:
-            self.chain_id = chain_id
-            self._web3_helper = Web3Helper.get_instance(chain_id)
-            self._client = UniswapClient(self._web3_helper.web3, chain_id)
-
+        """验证链ID并更新客户端"""
+        if not chain_id:
+            raise ValidationError("chain_id cannot be empty")
+            
+        if chain_id not in self.SUPPORTED_CHAINS:
+            raise ValidationError(f"Unsupported chain_id: {chain_id}. Must be one of {self.SUPPORTED_CHAINS}")
+            
+        # 如果客户端不存在或链ID改变，重新初始化客户端
+        if not self._client or self._client.chain_id != chain_id:
+            self.init_provider(chain_id)
+            
         return chain_id
-
+        
     def _validate_address(self, address: str, param_name: str) -> str:
         """验证地址格式"""
-        if not address or not isinstance(address, str):
-            raise ValidationError(f"Invalid {param_name}: {address}. Must be a non-empty string.")
-
-        if not re.match(r'^0x[a-fA-F0-9]{40}$', address):
-            raise ValidationError(f"Invalid {param_name} format: {address}. Must be a valid Ethereum address.")
-
-        return address
-
+        if not address:
+            raise ValidationError(f"{param_name} cannot be empty")
+            
+        try:
+            return self.client.validate_address(address)
+        except Exception as e:
+            raise ValidationError(f"Invalid {param_name}: {str(e)}")
+            
     def _validate_amount(self, amount: str) -> str:
         """验证金额格式"""
+        if not amount:
+            raise ValidationError("amount cannot be empty")
+            
         try:
-            # 尝试转换为 Decimal 确保是有效数字
-            amount_decimal = Decimal(amount)
-            if amount_decimal <= 0:
-                raise ValidationError(f"Amount must be greater than 0, got {amount}")
-            return amount
+            float_amount = float(amount)
+            if float_amount <= 0:
+                raise ValidationError(f"Amount must be positive, got {amount}")
         except (ValueError, TypeError):
-            raise ValidationError(f"Invalid amount format: {amount}. Must be a valid positive number.")
-
+            raise ValidationError(f"Invalid amount format: {amount}. Must be a positive number.")
+            
+        return amount
+        
     def _get_amount_in_wei(self, token_address: str, amount: str) -> str:
-        """将代币金额转换为链上精度"""
+        """获取以 wei 为单位的金额"""
         try:
             # 验证输入
             token_address = self._validate_address(token_address, "token_address")
             amount = self._validate_amount(amount)
-
+            weth = self.client.router_contract.functions.WETH9().call()
             # 获取代币精度
-            if token_address.lower() == "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee":
-                if self.chain_id not in NATIVE_TOKENS:
-                    raise ValidationError(f"Native token configuration not found for chain {self.chain_id}")
-                decimals = NATIVE_TOKENS[self.chain_id]["decimals"]
+            if token_address.lower() == "0x0000000000000000000000000000000000000000" or token_address.lower() == weth.lower():
+                # 处理原生代币
+                if self._client.chain_id not in NATIVE_TOKENS:
+                    raise ValidationError(f"Native token configuration not found for chain {self._client.chain_id}")
+                decimals = NATIVE_TOKENS[self._client.chain_id]["decimals"]
             else:
+                # 获取 ERC20 代币的精度
                 decimals = self._web3_helper.get_token_decimals(token_address)
 
-            return str(self._web3_helper.parse_token_amount(amount, decimals))
+            # 转换为 wei 单位
+            float_amount = float(amount)
+            raw_amount = str(int(float_amount * (10 ** decimals)))
+            return raw_amount
         except ValidationError as e:
             # Re-raise validation errors
             raise e
         except Exception as e:
-            logger.error(f"Failed to convert amount {amount} for token {token_address}: {str(e)}")
+            logger.error(f"Failed to get amount in wei: {str(e)}")
             raise ProviderError(f"Amount conversion failed: {str(e)}")
 
     def get_quote(self, chain_id: str, from_token: str, to_token: str, amount: str, **kwargs) -> Dict:
-        """获取报价，支持多费率层级"""
+        """获取兑换报价"""
         try:
-            # 验证输入参数
+            # 验证输入
             chain_id = self._validate_chain_id(chain_id)
             from_token = self._validate_address(from_token, "from_token")
             to_token = self._validate_address(to_token, "to_token")
@@ -106,6 +143,7 @@ class UniswapProvider(IDexProvider):
                 "amount": raw_amount
             }
 
+            # 处理可选参数
             # 如果提供了特定费率，则使用该费率
             if "fee" in kwargs:
                 fee = kwargs.get("fee")
@@ -117,11 +155,26 @@ class UniswapProvider(IDexProvider):
                 except (ValueError, TypeError):
                     raise ValidationError(f"Invalid fee format: {fee}. Must be an integer.")
 
+            # 如果提供了特定路径ID，则使用该路径
+            if "pathId" in kwargs:
+                params["pathId"] = kwargs.get("pathId")
+
+            # 设置最大跳数
+            if "maxHops" in kwargs:
+                try:
+                    max_hops = int(kwargs.get("maxHops"))
+                    if max_hops < 1 or max_hops > self.client.MAX_HOPS:
+                        raise ValidationError(f"maxHops must be between 1 and {self.client.MAX_HOPS}")
+                    params["maxHops"] = max_hops
+                except (ValueError, TypeError):
+                    raise ValidationError(f"Invalid maxHops format: {kwargs.get('maxHops')}. Must be an integer.")
+
             # 获取多路径报价
             quote_result = self.client.get_quote(params)
+            weth = self.client.router_contract.functions.WETH9().call()
 
             # 获取代币精度并转换为人类可读的数量
-            if to_token.lower() == "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee":
+            if to_token.lower() == "0x0000000000000000000000000000000000000000" or to_token.lower() == weth.lower():
                 if chain_id not in NATIVE_TOKENS:
                     raise ValidationError(f"Native token configuration not found for chain {chain_id}")
                 to_decimals = NATIVE_TOKENS[chain_id]["decimals"]
@@ -139,8 +192,10 @@ class UniswapProvider(IDexProvider):
                 "toAmount": quote_result["toAmount"],
                 "humanAmount": f"{human_amount:.8f}",
                 "estimatedGas": quote_result["estimatedGas"],
-                "fee": quote_result["fee"],
-                "pathId": quote_result["pathId"]
+                "pathId": quote_result["pathId"],
+                "path": quote_result["path"],
+                "fees": quote_result["fees"],
+                "pathType": quote_result["type"]
             }
 
             # 如果存在多路径结果，添加到结果中
@@ -150,11 +205,13 @@ class UniswapProvider(IDexProvider):
                     if path["toAmount"] != "0":
                         path_human_amount = float(path["toAmount"]) / (10 ** to_decimals)
                         paths_info.append({
-                            "fee": path["fee"],
+                            "pathId": path["pathId"],
+                            "path": path["path"],
+                            "fees": path["fees"],
                             "toAmount": path["toAmount"],
                             "humanAmount": f"{path_human_amount:.8f}",
                             "estimatedGas": path["estimatedGas"],
-                            "pathId": path["pathId"]
+                            "pathType": path["type"]
                         })
                 if paths_info:
                     result["availablePaths"] = paths_info
@@ -188,8 +245,9 @@ class UniswapProvider(IDexProvider):
             token_address = self._validate_address(token_address, "token_address")
             owner_address = self._validate_address(owner_address, "owner_address")
 
+            weth = self.client.router_contract.functions.WETH9().call()
             # 如果是原生代币，不需要授权
-            if token_address.lower() == "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee":
+            if token_address.lower() == "0x0000000000000000000000000000000000000000" or token_address.lower() == weth.lower():
                 return None
 
             # 获取路由合约地址
@@ -253,7 +311,7 @@ class UniswapProvider(IDexProvider):
     def swap(self, chain_id: str, from_token: str, to_token: str, amount: str,
              recipient: Optional[str] = None, slippage: str = "0.005",
              infinite_approval: bool = False, **kwargs) -> str:
-        """执行兑换，支持多费率层级
+        """执行兑换，支持多费率层级和多跳路径
 
         Args:
             chain_id (str): 链ID
@@ -292,30 +350,46 @@ class UniswapProvider(IDexProvider):
 
             user_address = self.wallet_config["address"]
             raw_amount = self._get_amount_in_wei(from_token, amount)
-
-            # 处理费率参数
-            fee = None
+            
+            swap_params = {
+                'fromTokenAddress': from_token,
+                'toTokenAddress': to_token,
+                'amount': raw_amount,
+                'userWalletAddress': user_address,
+                'slippage': slippage
+            }
+            
+            # 处理可选参数
+            # 如果提供了特定费率，则使用该费率
             if "fee" in kwargs:
                 try:
                     fee = int(kwargs["fee"])
                     if fee not in self.client.FEE_TIERS:
                         raise ValidationError(f"Invalid fee: {fee}. Must be one of {self.client.FEE_TIERS}")
+                    swap_params["fee"] = fee
                 except (ValueError, TypeError):
                     raise ValidationError(f"Invalid fee format: {kwargs['fee']}. Must be an integer.")
+                    
+            # 如果提供了特定路径ID，则使用该路径
+            if "pathId" in kwargs:
+                swap_params["pathId"] = kwargs["pathId"]
+                logger.info(f"Using specified path ID: {kwargs['pathId']}")
+                
+            # 如果提供了最大跳数限制
+            if "maxHops" in kwargs:
+                try:
+                    max_hops = int(kwargs["maxHops"])
+                    if max_hops < 1 or max_hops > self.client.MAX_HOPS:
+                        raise ValidationError(f"maxHops must be between 1 and {self.client.MAX_HOPS}")
+                    swap_params["maxHops"] = max_hops
+                except (ValueError, TypeError):
+                    raise ValidationError(f"Invalid maxHops format: {kwargs['maxHops']}. Must be an integer.")
 
-            # 如果没有指定费率，先获取报价以确定最佳费率
-            if fee is None:
-                quote = self.get_quote(
-                    chain_id=chain_id,
-                    from_token=from_token,
-                    to_token=to_token,
-                    amount=amount
-                )
-                fee = quote["fee"]
-                logger.info(f"Using optimal fee tier {fee} for {from_token}/{to_token}")
+            if recipient:
+                swap_params['recipient'] = recipient
 
             # 检查授权 (仅对非原生代币)
-            weth = self._client.router_contract.functions.WETH9().call()
+            weth = self.client.router_contract.functions.WETH9().call()
             if from_token.lower() != weth.lower():
                 approve_tx = self.check_and_approve(
                     chain_id=chain_id,
@@ -332,28 +406,35 @@ class UniswapProvider(IDexProvider):
                         raise ProviderError(f"Approval transaction failed: {approve_tx}")
                     logger.info(f"Approval transaction confirmed: {approve_tx}")
 
-            # 构建兑换参数
-            params = {
-                'fromTokenAddress': from_token,
-                'toTokenAddress': to_token,
-                'amount': raw_amount,
-                'userWalletAddress': user_address,
-                'fee': fee,
-                'slippage': slippage
-            }
-
-            if recipient:
-                params['recipient'] = recipient
-
             # 获取兑换数据
             try:
-                swap_data = self.client.get_swap_data(params)
+                swap_data = self.client.get_swap_data(swap_params)
+                # 记录与交易相关的路径信息
+                logger.info(f"Swapping with path: {swap_data.get('path')} using fees: {swap_data.get('fees')}")
+                logger.info(f"Path type: {swap_data.get('pathType', 'single')}")
             except Exception as e:
                 logger.error(f"Failed to get swap data: {str(e)}")
-                raise ProviderError(f"Failed to generate swap transaction: {str(e)}")
+                raise ProviderError(f"Swap data generation failed: {str(e)}")
 
             # 发送交易
             try:
+                # 保存交易类型相关字段
+                tx_type = swap_data.pop('type', None)
+                path_type = swap_data.pop('pathType', None)
+                path = swap_data.pop('path', None)
+                fees = swap_data.pop('fees', None)
+                
+                # 记录类型信息
+                logger.info(f"Transaction type: {tx_type}, path type: {path_type}")
+                if path:
+                    logger.info(f"Path: {path}")
+                if fees:
+                    logger.info(f"Fees: {fees}")
+                
+                # 使用相同的交易类型
+                if tx_type is not None:
+                    swap_data['type'] = tx_type
+                
                 tx_hash = self._web3_helper.send_transaction(
                     swap_data,
                     self.wallet_config["private_key"]
@@ -362,14 +443,16 @@ class UniswapProvider(IDexProvider):
                 return tx_hash
             except Exception as e:
                 logger.error(f"Failed to send swap transaction: {str(e)}")
-                raise ProviderError(f"Failed to execute swap transaction: {str(e)}")
+                if "gas required exceeds allowance" in str(e):
+                    raise ProviderError(f"Insufficient gas: {str(e)}")
+                raise ProviderError(f"Swap transaction failed: {str(e)}")
 
         except ValidationError as e:
-            # Re-raise validation errors for better handling
+            # Re-raise validation errors
             raise e
         except Exception as e:
-            logger.error(f"Failed to execute swap: {str(e)}")
-            raise ProviderError(f"Swap execution failed: {str(e)}")
+            logger.error(f"Failed to swap: {str(e)}")
+            raise ProviderError(f"Swap operation failed: {str(e)}")
 
     def _build_tx_params(self, owner_address: str) -> Dict[str, Any]:
         """构建交易参数，支持 EIP-1559 和传统交易类型
@@ -389,7 +472,7 @@ class UniswapProvider(IDexProvider):
             tx_params = {
                 'from': owner_address,
                 'nonce': self._web3_helper.web3.eth.get_transaction_count(owner_address),
-                'maxFeePerGas': base_fee * 2 + priority_fee,  # 基础费用的2倍 + 优先费
+                'maxFeePerGas': base_fee * 1.2 + priority_fee,  # 基础费用的 1.2 倍 + 优先费
                 'maxPriorityFeePerGas': priority_fee,
                 'type': 2  # EIP-1559 交易类型
             }

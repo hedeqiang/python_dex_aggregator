@@ -30,25 +30,25 @@ USDT = "0xdAC17F958D2ee523a2206206994597C13D831ec7"
 #
 # print(f"Swap transaction hash: {tx_hash}")
 
-WBNB = "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d"
+WBNB = "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c"
 USDT = "0x55d398326f99059ff775485246999027b3197955"
 
 quote = dex.get_quote(
     chain_id="56",
     from_token=WBNB,  # WBNB
     to_token=USDT,    # USDT
-    amount="0.1"   # 0.0001 WBNB
+    amount="0.001"   # 0.0001 WBNB
 )
 print(json.dumps(quote, indent=4))
 
-
-tx_hash = dex.swap(
-    chain_id="56",
-    from_token=WBNB,  # WBNB
-    to_token=USDT,    # USDT
-    amount="0.1",
-    recipient="0x76bE3c7A8966D44240411b057B12d2fa72131ad6",
-    slippage="0.003"  # 0.3% 滑点
-)
-
-print(f"Swap transaction hash: {tx_hash}")
+#
+# tx_hash = dex.swap(
+#     chain_id="56",
+#     from_token=WBNB,  # WBNB
+#     to_token=USDT,    # USDT
+#     amount="0.001",
+#     recipient="0x76bE3c7A8966D44240411b057B12d2fa72131ad6",
+#     slippage="0.003"  # 0.3% 滑点
+# )
+#
+# print(f"Swap transaction hash: {tx_hash}")

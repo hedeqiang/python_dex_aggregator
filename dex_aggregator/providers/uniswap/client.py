@@ -3,7 +3,7 @@ from web3 import Web3
 from eth_typing import ChecksumAddress
 from ...core.exceptions import ProviderError, ValidationError
 from ...utils.logger import get_logger
-from ...config.contracts import UNISWAP_V3_CONTRACTS
+from ...config.contracts import UNISWAP_V3_CONTRACTS, COMMON_BASES
 import re
 import json
 
@@ -14,6 +14,9 @@ class UniswapClient:
     
     # Uniswap V3 支持的费率档位
     FEE_TIERS = [100, 500, 3000, 10000]  # 0.01%, 0.05%, 0.3%, 1%
+    
+    # 最大跳数限制
+    MAX_HOPS = 3
     
     def __init__(self, web3: Web3, chain_id: str):
         if chain_id not in UNISWAP_V3_CONTRACTS:
@@ -117,6 +120,29 @@ class UniswapClient:
             
         return best_pool, best_fee
 
+    def encode_path(self, tokens: List[str], fees: List[int]) -> bytes:
+        """
+        将路径编码为Uniswap V3路径格式
+        例如：[tokenA, tokenB, tokenC] 和 [fee1, fee2] 编码为 tokenA + fee1 + tokenB + fee2 + tokenC
+        """
+        if len(tokens) != len(fees) + 1:
+            raise ValidationError(f"Tokens length ({len(tokens)}) should be fees length ({len(fees)}) + 1")
+            
+        path = b''
+        for i in range(len(tokens) - 1):
+            token_in = self.validate_address(tokens[i])
+            fee = fees[i]
+            
+            # 添加当前token (20字节) 和 fee (3字节)
+            path += Web3.to_bytes(hexstr=token_in[2:]).rjust(20, b'\0')
+            path += fee.to_bytes(3, 'big')
+            
+        # 添加最后一个token
+        last_token = self.validate_address(tokens[-1])
+        path += Web3.to_bytes(hexstr=last_token[2:]).rjust(20, b'\0')
+        
+        return path
+
     def get_quote_for_path(self, token_in: str, token_out: str, amount_in: int, fee: int) -> Dict:
         """获取单一路径的报价"""
         try:
@@ -137,19 +163,171 @@ class UniswapClient:
 
             return {
                 "pathId": f"{token_in}-{fee}-{token_out}",
-                "fee": fee,
+                "path": [token_in, token_out],
+                "fees": [fee],
                 "toAmount": str(amount_out),
-                "estimatedGas": str(gas_estimate)
+                "estimatedGas": str(gas_estimate),
+                "type": "single"
             }
         except Exception as e:
             logger.warning(f"Failed to get quote for path {token_in}/{token_out} with fee {fee}: {str(e)}")
             return {
                 "pathId": f"{token_in}-{fee}-{token_out}",
-                "fee": fee,
+                "path": [token_in, token_out],
+                "fees": [fee],
                 "toAmount": "0",
                 "estimatedGas": "0",
-                "error": str(e)
+                "error": str(e),
+                "type": "single"
             }
+
+    def get_quote_for_multi_path(self, path: List[str], fees: List[int], amount_in: int) -> Dict:
+        """获取多跳路径的报价"""
+        try:
+            # 验证所有地址
+            validated_path = [self.validate_address(token) for token in path]
+            
+            # 验证所有费率
+            for fee in fees:
+                if fee not in self.FEE_TIERS:
+                    raise ValidationError(f"Invalid fee tier {fee}. Supported tiers: {self.FEE_TIERS}")
+                    
+            # 编码路径
+            encoded_path = self.encode_path(validated_path, fees)
+            
+            # 获取报价
+            try:
+                quote_result = self.quoter_contract.functions.quoteExactInput(
+                    encoded_path,
+                    amount_in
+                ).call()
+                
+                amount_out = quote_result[0]  # 第一个返回值是输出金额
+                gas_estimate = 300000  # 多跳路径的 gas 消耗通常较高，使用固定值
+                
+                path_id = "-".join([f"{path[i]}-{fees[i]}" for i in range(len(fees))] + [path[-1]])
+                
+                return {
+                    "pathId": path_id,
+                    "path": path,
+                    "fees": fees,
+                    "toAmount": str(amount_out),
+                    "estimatedGas": str(gas_estimate),
+                    "type": "multi"
+                }
+            except Exception as e:
+                logger.warning(f"Failed to get quote for multi-hop path: {str(e)}")
+                path_id = "-".join([f"{path[i]}-{fees[i]}" for i in range(len(fees))] + [path[-1]])
+                
+                return {
+                    "pathId": path_id,
+                    "path": path,
+                    "fees": fees,
+                    "toAmount": "0",
+                    "estimatedGas": "0",
+                    "error": str(e),
+                    "type": "multi"
+                }
+                
+        except Exception as e:
+            logger.error(f"Failed to get quote for multi-hop path: {str(e)}")
+            return {
+                "pathId": f"multi-path-error",
+                "path": path,
+                "fees": fees,
+                "toAmount": "0",
+                "estimatedGas": "0",
+                "error": str(e),
+                "type": "multi"
+            }
+
+    def find_possible_paths(self, token_in: str, token_out: str, max_hops: int = 2) -> List[Dict]:
+        """
+        寻找从token_in到token_out的所有可能路径
+        max_hops: 最大跳数(1表示直接交换, 2表示1个中间代币, 等等)
+        """
+        # 获取当前链的常用中间代币
+        common_bases = COMMON_BASES.get(self.chain_id, [])
+        
+        paths = []
+        
+        # 添加直接路径 (A->B)
+        for fee in self.FEE_TIERS:
+            pool = self.get_pool(token_in, token_out, fee)
+            if pool != "0x0000000000000000000000000000000000000000":
+                paths.append({
+                    "tokens": [token_in, token_out],
+                    "fees": [fee]
+                })
+        
+        # 如果需要探索更多跳数，且有常用代币可用
+        if max_hops >= 2 and common_bases:
+            # 添加一跳路径 (A->C->B)
+            for base in common_bases:
+                # 跳过如果中间代币与起始或结束代币相同
+                if base.lower() in [token_in.lower(), token_out.lower()]:
+                    continue
+                    
+                # 检查第一跳 (A->C)
+                fee1_options = []
+                for fee in self.FEE_TIERS:
+                    pool = self.get_pool(token_in, base, fee)
+                    if pool != "0x0000000000000000000000000000000000000000":
+                        fee1_options.append(fee)
+                
+                # 检查第二跳 (C->B)
+                fee2_options = []
+                for fee in self.FEE_TIERS:
+                    pool = self.get_pool(base, token_out, fee)
+                    if pool != "0x0000000000000000000000000000000000000000":
+                        fee2_options.append(fee)
+                
+                # 如果两跳都有有效的池子，添加这个路径
+                if fee1_options and fee2_options:
+                    # 使用第一个找到的费率，简化实现
+                    paths.append({
+                        "tokens": [token_in, base, token_out],
+                        "fees": [fee1_options[0], fee2_options[0]]
+                    })
+        
+        # 如果需要探索3跳路径且有足够的常用代币
+        if max_hops >= 3 and len(common_bases) >= 2:
+            # 添加两跳路径 (A->C->D->B)
+            for base1 in common_bases:
+                if base1.lower() in [token_in.lower(), token_out.lower()]:
+                    continue
+                    
+                for base2 in common_bases:
+                    if base2.lower() in [token_in.lower(), token_out.lower(), base1.lower()]:
+                        continue
+                    
+                    # 检查是否存在 A->C->D->B 的完整路径
+                    fee1 = None
+                    for f in self.FEE_TIERS:
+                        if self.get_pool(token_in, base1, f) != "0x0000000000000000000000000000000000000000":
+                            fee1 = f
+                            break
+                    
+                    fee2 = None
+                    for f in self.FEE_TIERS:
+                        if self.get_pool(base1, base2, f) != "0x0000000000000000000000000000000000000000":
+                            fee2 = f
+                            break
+                    
+                    fee3 = None
+                    for f in self.FEE_TIERS:
+                        if self.get_pool(base2, token_out, f) != "0x0000000000000000000000000000000000000000":
+                            fee3 = f
+                            break
+                    
+                    # 如果找到完整路径，添加
+                    if fee1 and fee2 and fee3:
+                        paths.append({
+                            "tokens": [token_in, base1, base2, token_out],
+                            "fees": [fee1, fee2, fee3]
+                        })
+        
+        return paths
 
     def get_quote(self, params: Dict) -> Dict:
         """获取多路径报价信息，并返回最优路径"""
@@ -159,22 +337,65 @@ class UniswapClient:
             amount_in = int(params["amount"])
             
             # 验证地址
-            self.validate_address(token_in)
-            self.validate_address(token_out)
+            token_in_cs = self.validate_address(token_in)
+            token_out_cs = self.validate_address(token_out)
             
-            # 如果指定了费率，只查询该费率的路径
-            if "fee" in params:
+            # 查找所有可能的路径
+            max_hops = min(int(params.get("maxHops", 2)), self.MAX_HOPS)
+            all_possible_paths = self.find_possible_paths(token_in_cs, token_out_cs, max_hops)
+            
+            logger.info(f"Found {len(all_possible_paths)} possible paths for {token_in} to {token_out}")
+            
+            # 如果指定了特定路径，只查询该路径
+            if "pathId" in params:
+                path_id = params["pathId"]
+                matching_paths = [p for p in all_possible_paths if "-".join([f"{p['tokens'][i]}-{p['fees'][i]}" for i in range(len(p['fees']))] + [p['tokens'][-1]]) == path_id]
+                if matching_paths:
+                    selected_path = matching_paths[0]
+                    if len(selected_path["tokens"]) == 2:
+                        path_quote = self.get_quote_for_path(
+                            selected_path["tokens"][0], 
+                            selected_path["tokens"][1], 
+                            amount_in, 
+                            selected_path["fees"][0]
+                        )
+                    else:
+                        path_quote = self.get_quote_for_multi_path(
+                            selected_path["tokens"],
+                            selected_path["fees"],
+                            amount_in
+                        )
+                    paths = [path_quote]
+                else:
+                    raise ValidationError(f"Invalid path ID: {path_id}")
+            
+            # 如果指定了费率，只查询直接路径
+            elif "fee" in params:
                 fee = int(params["fee"])
                 if fee not in self.FEE_TIERS:
                     raise ValidationError(f"Invalid fee tier {fee}. Supported tiers: {self.FEE_TIERS}")
                 paths = [self.get_quote_for_path(token_in, token_out, amount_in, fee)]
+            
+            # 否则，查询所有可能的路径
             else:
-                # 查询所有费率的路径
                 paths = []
+                
+                # 获取直接路径的报价
                 for fee in self.FEE_TIERS:
                     path_quote = self.get_quote_for_path(token_in, token_out, amount_in, fee)
                     if path_quote["toAmount"] != "0":
                         paths.append(path_quote)
+                
+                # 获取多跳路径的报价
+                for path_info in all_possible_paths:
+                    if len(path_info["tokens"]) > 2:  # 多跳路径
+                        path_quote = self.get_quote_for_multi_path(
+                            path_info["tokens"],
+                            path_info["fees"],
+                            amount_in
+                        )
+                        if path_quote["toAmount"] != "0":
+                            paths.append(path_quote)
             
             if not paths or all(p["toAmount"] == "0" for p in paths):
                 raise ProviderError(f"No valid route found for {token_in} to {token_out}")
@@ -188,8 +409,10 @@ class UniswapClient:
                 "fromAmount": params["amount"],
                 "toAmount": best_path["toAmount"],
                 "estimatedGas": best_path["estimatedGas"],
-                "fee": best_path["fee"],
                 "pathId": best_path["pathId"],
+                "path": best_path["path"],
+                "fees": best_path["fees"],
+                "type": best_path["type"],
                 "allPaths": paths  # 返回所有可能的路径，以供参考
             }
         except ValidationError as e:
@@ -219,52 +442,56 @@ class UniswapClient:
             )
             user_address = self.validate_address(params["userWalletAddress"])
             
-            # 使用支持的费率或查找最优费率
-            fee = int(params.get("fee", 3000))
-            if fee not in self.FEE_TIERS:
-                _, fee = self.find_best_pool(token_in, token_out)
-                logger.info(f"Using optimal fee tier {fee} for {token_in}/{token_out}")
-                
             slippage = float(params.get("slippage", "0.005"))
             if not 0 <= slippage <= 1:
                 raise ValidationError(f"Slippage must be between 0 and 1, got {slippage}")
-
-            # 获取报价
-            quote_params = {
-                'tokenIn': token_in,
-                'tokenOut': token_out,
-                'fee': fee,
-                'amountIn': amount_in,
-                'sqrtPriceLimitX96': 0
-            }
-            logger.info(f"Getting quote with parameters: {json.dumps(quote_params)}")
             
-            quote_amount = self.quoter_contract.functions.quoteExactInputSingle(quote_params).call()
-            min_amount_out = int(quote_amount[0] * (1 - slippage))  # 使用第一个返回值作为 amountOut
-            logger.info(f"Quote result: amountOut={quote_amount[0]}, minAmountOut={min_amount_out}")
+            # 确定使用的路径
+            path_type = "single"  # 默认为单跳路径
+            
+            # 如果指定了路径ID，使用该路径
+            if "pathId" in params:
+                # 先获取报价来确认路径类型和详情
+                quote_result = self.get_quote({
+                    "fromTokenAddress": token_in,
+                    "toTokenAddress": token_out,
+                    "amount": str(amount_in),
+                    "pathId": params["pathId"]
+                })
+                
+                path_tokens = quote_result["path"]
+                path_fees = quote_result["fees"]
+                path_type = quote_result["type"]
+                logger.info(f"Using specified path: {quote_result['pathId']}, type: {path_type}")
+            else:
+                # 否则，获取最优路径
+                quote_result = self.get_quote({
+                    "fromTokenAddress": token_in,
+                    "toTokenAddress": token_out,
+                    "amount": str(amount_in),
+                    "maxHops": int(params.get("maxHops", 2))
+                })
+                
+                path_tokens = quote_result["path"]
+                path_fees = quote_result["fees"]
+                path_type = quote_result["type"]
+                logger.info(f"Using best path: {quote_result['pathId']}, type: {path_type}")
+            
+            # 获取输出金额和最小输出金额
+            quote_amount = int(quote_result["toAmount"])
+            min_amount_out = int(quote_amount * (1 - slippage))
+            logger.info(f"Quote result: amountOut={quote_amount}, minAmountOut={min_amount_out}")
 
             # 构建交易数据
             deadline = self.web3.eth.get_block('latest').timestamp + 1800  # 30分钟后过期
             
-            swap_params = {
-                'tokenIn': token_in,
-                'tokenOut': token_out,
-                'fee': fee,
-                'recipient': recipient,
-                'deadline': deadline,
-                'amountIn': amount_in,
-                'amountOutMinimum': min_amount_out,
-                'sqrtPriceLimitX96': 0
-            }
-            logger.info(f"Swap parameters: {json.dumps(swap_params)}")
-
-            # 构建基础交易参数
-            weth = self.router_contract.functions.WETH9().call()
-            is_native_token = token_in.lower() == weth.lower()
-            
             # 获取 nonce
             nonce = self.web3.eth.get_transaction_count(user_address)
             logger.info(f"Current nonce for {user_address}: {nonce}")
+            
+            # 构建基础交易参数
+            weth = self.router_contract.functions.WETH9().call()
+            is_native_token = token_in.lower() == weth.lower()
             
             # 使用 EIP-1559 交易类型 (如果网络支持)
             try:
@@ -278,7 +505,7 @@ class UniswapClient:
                     'value': amount_in if is_native_token else 0,
                     'nonce': nonce,
                     'chainId': int(self.chain_id),
-                    'maxFeePerGas': base_fee * 2 + priority_fee,  # 基础费用的2倍 + 优先费
+                    'maxFeePerGas': base_fee * 1.2 + priority_fee,  # 基础费用 + 优先费用
                     'maxPriorityFeePerGas': priority_fee,
                     'type': 2  # EIP-1559 交易类型
                 }
@@ -298,27 +525,77 @@ class UniswapClient:
                 use_eip1559 = False
                 logger.info(f"Using legacy transaction with parameters: {json.dumps(tx_params)}")
 
-            # 获取交易数据
-            tx = self.router_contract.functions.exactInputSingle(
-                swap_params
-            ).build_transaction(tx_params)
-            logger.info(f"Built transaction data: {tx['data'][:100]}...")  # 只记录数据的前100个字符
-
-            # 估算 gas
-            try:
-                gas_estimate = self.router_contract.functions.exactInputSingle(
+            # 根据路径类型构建交易
+            if path_type == "single":
+                # 单跳路径使用 exactInputSingle
+                swap_params = {
+                    'tokenIn': path_tokens[0],
+                    'tokenOut': path_tokens[1],
+                    'fee': path_fees[0],
+                    'recipient': recipient,
+                    'deadline': deadline,
+                    'amountIn': amount_in,
+                    'amountOutMinimum': min_amount_out,
+                    'sqrtPriceLimitX96': 0
+                }
+                logger.info(f"Single-hop swap parameters: {json.dumps(swap_params)}")
+                
+                # 获取交易数据
+                tx = self.router_contract.functions.exactInputSingle(
                     swap_params
-                ).estimate_gas({
-                    'from': user_address,
-                    'value': amount_in if is_native_token else 0,
-                    'type': tx_params['type']
-                })
-                gas = int(gas_estimate * 1.2)  # 增加 20% gas 余量
-                logger.info(f"Estimated gas: {gas_estimate}, With buffer: {gas}")
-            except Exception as e:
-                logger.warning(f"Failed to estimate gas, using default: {str(e)}")
-                gas = 300000  # 使用默认值
-                logger.info(f"Using default gas limit: {gas}")
+                ).build_transaction(tx_params)
+                
+                # 估算 gas
+                try:
+                    gas_estimate = self.router_contract.functions.exactInputSingle(
+                        swap_params
+                    ).estimate_gas({
+                        'from': user_address,
+                        'value': amount_in if is_native_token else 0,
+                        'type': tx_params['type']
+                    })
+                    gas = int(gas_estimate * 1.2)  # 增加 20% gas 余量
+                    logger.info(f"Estimated gas for single-hop: {gas_estimate}, With buffer: {gas}")
+                except Exception as e:
+                    logger.warning(f"Failed to estimate gas for single-hop, using default: {str(e)}")
+                    gas = 300000  # 使用默认值
+                    logger.info(f"Using default gas limit: {gas}")
+                
+            else:
+                # 多跳路径使用 exactInput
+                encoded_path = self.encode_path(path_tokens, path_fees)
+                
+                swap_params = {
+                    'path': encoded_path,
+                    'recipient': recipient,
+                    'deadline': deadline,
+                    'amountIn': amount_in,
+                    'amountOutMinimum': min_amount_out
+                }
+                logger.info(f"Multi-hop swap parameters: path={path_tokens}, fees={path_fees}")
+                
+                # 获取交易数据
+                tx = self.router_contract.functions.exactInput(
+                    swap_params
+                ).build_transaction(tx_params)
+                
+                # 估算 gas (多跳路径通常需要更多 gas)
+                try:
+                    gas_estimate = self.router_contract.functions.exactInput(
+                        swap_params
+                    ).estimate_gas({
+                        'from': user_address,
+                        'value': amount_in if is_native_token else 0,
+                        'type': tx_params['type']
+                    })
+                    gas = int(gas_estimate * 1.3)  # 增加 30% gas 余量，因为多跳路径
+                    logger.info(f"Estimated gas for multi-hop: {gas_estimate}, With buffer: {gas}")
+                except Exception as e:
+                    logger.warning(f"Failed to estimate gas for multi-hop, using default: {str(e)}")
+                    gas = 500000  # 使用更高的默认值，因为多跳路径
+                    logger.info(f"Using default gas limit for multi-hop: {gas}")
+
+            logger.info(f"Built transaction data: {tx['data'][:100]}...")  # 只记录数据的前100个字符
 
             # 构建最终交易数据
             result = {
@@ -329,7 +606,10 @@ class UniswapClient:
                 "gas": gas,
                 "chainId": int(self.chain_id),
                 "type": tx_params['type'],
-                "nonce": nonce
+                "nonce": nonce,
+                "pathType": path_type,
+                "path": path_tokens,
+                "fees": path_fees
             }
             
             # 根据交易类型设置 gas 相关字段
