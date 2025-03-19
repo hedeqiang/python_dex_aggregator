@@ -1,4 +1,4 @@
-from typing import Dict, Optional, List, Tuple, Any
+from typing import Dict, Optional, List, Tuple, Any, Set
 from web3 import Web3
 from eth_typing import ChecksumAddress
 from ...core.exceptions import ProviderError, ValidationError
@@ -6,6 +6,9 @@ from ...utils.logger import get_logger
 from ...config.contracts import UNISWAP_V3_CONTRACTS, COMMON_BASES
 import re
 import json
+from functools import lru_cache
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
 
 logger = get_logger(__name__)
 
@@ -18,6 +21,9 @@ class UniswapClient:
     # 最大跳数限制
     MAX_HOPS = 3
     
+    # 缓存过期时间（秒）
+    CACHE_TTL = 300  # 5分钟
+    
     def __init__(self, web3: Web3, chain_id: str):
         if chain_id not in UNISWAP_V3_CONTRACTS:
             raise ValueError(f"Unsupported chain ID for Uniswap V3: {chain_id}")
@@ -26,9 +32,50 @@ class UniswapClient:
         self.chain_id = chain_id
         self.contracts = UNISWAP_V3_CONTRACTS[chain_id]
         
+        # 初始化缓存
+        self._pool_cache = {}  # 池子地址缓存
+        self._pool_cache_timestamp = {}  # 缓存时间戳
+        self._path_cache = {}  # 路径缓存
+        self._path_cache_timestamp = {}  # 路径缓存时间戳
+        
         self.factory_contract = self._get_factory_contract()
         self.router_contract = self._get_router_contract()
         self.quoter_contract = self._get_quoter_contract()
+
+    def _get_cached_pool(self, token_a: str, token_b: str, fee: int) -> Optional[str]:
+        """从缓存中获取池子地址"""
+        cache_key = f"{token_a.lower()}-{token_b.lower()}-{fee}"
+        current_time = time.time()
+        
+        # 检查缓存是否存在且未过期
+        if cache_key in self._pool_cache:
+            if current_time - self._pool_cache_timestamp[cache_key] < self.CACHE_TTL:
+                return self._pool_cache[cache_key]
+        
+        return None
+
+    def _set_pool_cache(self, token_a: str, token_b: str, fee: int, pool_address: str):
+        """设置池子地址缓存"""
+        cache_key = f"{token_a.lower()}-{token_b.lower()}-{fee}"
+        self._pool_cache[cache_key] = pool_address
+        self._pool_cache_timestamp[cache_key] = time.time()
+
+    def _get_cached_paths(self, token_in: str, token_out: str, max_hops: int) -> Optional[List[Dict]]:
+        """从缓存中获取路径"""
+        cache_key = f"{token_in.lower()}-{token_out.lower()}-{max_hops}"
+        current_time = time.time()
+        
+        if cache_key in self._path_cache:
+            if current_time - self._path_cache_timestamp[cache_key] < self.CACHE_TTL:
+                return self._path_cache[cache_key]
+        
+        return None
+
+    def _set_path_cache(self, token_in: str, token_out: str, max_hops: int, paths: List[Dict]):
+        """设置路径缓存"""
+        cache_key = f"{token_in.lower()}-{token_out.lower()}-{max_hops}"
+        self._path_cache[cache_key] = paths
+        self._path_cache_timestamp[cache_key] = time.time()
 
     def _get_factory_contract(self):
         """获取 Factory 合约实例"""
@@ -75,9 +122,15 @@ class UniswapClient:
             logger.error(f"Address validation failed for {address}: {str(e)}")
             raise ValidationError(f"Invalid address {address}: {str(e)}")
 
+    @lru_cache(maxsize=1000)
     def get_pool(self, token_a: str, token_b: str, fee: int = 3000) -> str:
-        """获取交易对池地址"""
+        """获取交易对池地址（带缓存）"""
         try:
+            # 检查缓存
+            cached_pool = self._get_cached_pool(token_a, token_b, fee)
+            if cached_pool is not None:
+                return cached_pool
+
             token_a_cs = self.validate_address(token_a)
             token_b_cs = self.validate_address(token_b)
             
@@ -92,33 +145,43 @@ class UniswapClient:
             
             if pool_address == "0x0000000000000000000000000000000000000000":
                 logger.warning(f"No pool found for {token_a}/{token_b} with fee {fee}")
+            else:
+                # 设置缓存
+                self._set_pool_cache(token_a, token_b, fee, pool_address)
                 
             return pool_address
         except ValidationError as e:
-            # Re-raise validation errors
             raise e
         except Exception as e:
             logger.error(f"Failed to get pool for {token_a}/{token_b}: {str(e)}")
             raise ProviderError(f"Failed to get Uniswap pool: {str(e)}")
-    
+
+    def _parallel_get_pool(self, token_a: str, token_b: str, fee: int) -> Tuple[int, str]:
+        """并行获取池子地址"""
+        return fee, self.get_pool(token_a, token_b, fee)
+
     def find_best_pool(self, token_a: str, token_b: str) -> Tuple[str, int]:
-        """在所有费率档位中寻找流动性最好的池子"""
-        best_pool = None
-        best_fee = None
-        
-        for fee in self.FEE_TIERS:
-            pool_address = self.get_pool(token_a, token_b, fee)
-            if pool_address != "0x0000000000000000000000000000000000000000":
-                # 这里可以添加进一步的流动性检查，例如获取池子的 liquidity 或 TVL
-                # 现在我们简单地使用第一个找到的非零地址池子
-                best_pool = pool_address
-                best_fee = fee
-                break
-                
-        if not best_pool:
-            raise ProviderError(f"No valid pool found for {token_a}/{token_b} across any fee tier")
+        """并行在所有费率档位中寻找流动性最好的池子"""
+        with ThreadPoolExecutor(max_workers=len(self.FEE_TIERS)) as executor:
+            future_to_fee = {
+                executor.submit(self._parallel_get_pool, token_a, token_b, fee): fee
+                for fee in self.FEE_TIERS
+            }
             
-        return best_pool, best_fee
+            best_pool = None
+            best_fee = None
+            
+            for future in as_completed(future_to_fee):
+                fee, pool_address = future.result()
+                if pool_address != "0x0000000000000000000000000000000000000000":
+                    best_pool = pool_address
+                    best_fee = fee
+                    break
+                    
+            if not best_pool:
+                raise ProviderError(f"No valid pool found for {token_a}/{token_b} across any fee tier")
+                
+            return best_pool, best_fee
 
     def encode_path(self, tokens: List[str], fees: List[int]) -> bytes:
         """
@@ -241,96 +304,138 @@ class UniswapClient:
                 "type": "multi"
             }
 
+    def _parallel_get_quote(self, path_info: Dict, amount_in: int) -> Dict:
+        """并行获取路径报价"""
+        if len(path_info["tokens"]) == 2:
+            return self.get_quote_for_path(
+                path_info["tokens"][0],
+                path_info["tokens"][1],
+                amount_in,
+                path_info["fees"][0]
+            )
+        else:
+            return self.get_quote_for_multi_path(
+                path_info["tokens"],
+                path_info["fees"],
+                amount_in
+            )
+
     def find_possible_paths(self, token_in: str, token_out: str, max_hops: int = 2) -> List[Dict]:
-        """
-        寻找从token_in到token_out的所有可能路径
-        max_hops: 最大跳数(1表示直接交换, 2表示1个中间代币, 等等)
-        """
+        """寻找从token_in到token_out的所有可能路径（带缓存）"""
+        # 检查缓存
+        cached_paths = self._get_cached_paths(token_in, token_out, max_hops)
+        if cached_paths is not None:
+            return cached_paths
+
         # 获取当前链的常用中间代币
         common_bases = COMMON_BASES.get(self.chain_id, [])
-        
         paths = []
         
-        # 添加直接路径 (A->B)
-        for fee in self.FEE_TIERS:
-            pool = self.get_pool(token_in, token_out, fee)
-            if pool != "0x0000000000000000000000000000000000000000":
-                paths.append({
-                    "tokens": [token_in, token_out],
-                    "fees": [fee]
-                })
+        # 并行获取直接路径
+        with ThreadPoolExecutor(max_workers=len(self.FEE_TIERS)) as executor:
+            future_to_fee = {
+                executor.submit(self._parallel_get_pool, token_in, token_out, fee): fee
+                for fee in self.FEE_TIERS
+            }
+            
+            for future in as_completed(future_to_fee):
+                fee, pool = future.result()
+                if pool != "0x0000000000000000000000000000000000000000":
+                    paths.append({
+                        "tokens": [token_in, token_out],
+                        "fees": [fee]
+                    })
         
         # 如果需要探索更多跳数，且有常用代币可用
         if max_hops >= 2 and common_bases:
-            # 添加一跳路径 (A->C->B)
-            for base in common_bases:
-                # 跳过如果中间代币与起始或结束代币相同
-                if base.lower() in [token_in.lower(), token_out.lower()]:
-                    continue
-                    
-                # 检查第一跳 (A->C)
-                fee1_options = []
-                for fee in self.FEE_TIERS:
-                    pool = self.get_pool(token_in, base, fee)
-                    if pool != "0x0000000000000000000000000000000000000000":
-                        fee1_options.append(fee)
+            # 并行处理一跳路径
+            with ThreadPoolExecutor(max_workers=min(len(common_bases), 10)) as executor:
+                future_to_base = {}
+                for base in common_bases:
+                    if base.lower() in [token_in.lower(), token_out.lower()]:
+                        continue
+                    future_to_base[executor.submit(self._find_two_hop_path, token_in, token_out, base)] = base
                 
-                # 检查第二跳 (C->B)
-                fee2_options = []
-                for fee in self.FEE_TIERS:
-                    pool = self.get_pool(base, token_out, fee)
-                    if pool != "0x0000000000000000000000000000000000000000":
-                        fee2_options.append(fee)
-                
-                # 如果两跳都有有效的池子，添加这个路径
-                if fee1_options and fee2_options:
-                    # 使用第一个找到的费率，简化实现
-                    paths.append({
-                        "tokens": [token_in, base, token_out],
-                        "fees": [fee1_options[0], fee2_options[0]]
-                    })
+                for future in as_completed(future_to_base):
+                    path = future.result()
+                    if path:
+                        paths.append(path)
         
         # 如果需要探索3跳路径且有足够的常用代币
         if max_hops >= 3 and len(common_bases) >= 2:
-            # 添加两跳路径 (A->C->D->B)
-            for base1 in common_bases:
-                if base1.lower() in [token_in.lower(), token_out.lower()]:
-                    continue
-                    
-                for base2 in common_bases:
-                    if base2.lower() in [token_in.lower(), token_out.lower(), base1.lower()]:
+            # 并行处理两跳路径
+            with ThreadPoolExecutor(max_workers=min(len(common_bases), 5)) as executor:
+                future_to_bases = {}
+                for base1 in common_bases:
+                    if base1.lower() in [token_in.lower(), token_out.lower()]:
                         continue
-                    
-                    # 检查是否存在 A->C->D->B 的完整路径
-                    fee1 = None
-                    for f in self.FEE_TIERS:
-                        if self.get_pool(token_in, base1, f) != "0x0000000000000000000000000000000000000000":
-                            fee1 = f
-                            break
-                    
-                    fee2 = None
-                    for f in self.FEE_TIERS:
-                        if self.get_pool(base1, base2, f) != "0x0000000000000000000000000000000000000000":
-                            fee2 = f
-                            break
-                    
-                    fee3 = None
-                    for f in self.FEE_TIERS:
-                        if self.get_pool(base2, token_out, f) != "0x0000000000000000000000000000000000000000":
-                            fee3 = f
-                            break
-                    
-                    # 如果找到完整路径，添加
-                    if fee1 and fee2 and fee3:
-                        paths.append({
-                            "tokens": [token_in, base1, base2, token_out],
-                            "fees": [fee1, fee2, fee3]
-                        })
+                    for base2 in common_bases:
+                        if base2.lower() in [token_in.lower(), token_out.lower(), base1.lower()]:
+                            continue
+                        future_to_bases[executor.submit(self._find_three_hop_path, token_in, token_out, base1, base2)] = (base1, base2)
+                
+                for future in as_completed(future_to_bases):
+                    path = future.result()
+                    if path:
+                        paths.append(path)
         
+        # 设置缓存
+        self._set_path_cache(token_in, token_out, max_hops, paths)
         return paths
 
+    def _find_two_hop_path(self, token_in: str, token_out: str, base: str) -> Optional[Dict]:
+        """查找两跳路径"""
+        # 检查第一跳 (A->C)
+        fee1 = None
+        for f in self.FEE_TIERS:
+            if self.get_pool(token_in, base, f) != "0x0000000000000000000000000000000000000000":
+                fee1 = f
+                break
+        
+        # 检查第二跳 (C->B)
+        fee2 = None
+        for f in self.FEE_TIERS:
+            if self.get_pool(base, token_out, f) != "0x0000000000000000000000000000000000000000":
+                fee2 = f
+                break
+        
+        if fee1 and fee2:
+            return {
+                "tokens": [token_in, base, token_out],
+                "fees": [fee1, fee2]
+            }
+        return None
+
+    def _find_three_hop_path(self, token_in: str, token_out: str, base1: str, base2: str) -> Optional[Dict]:
+        """查找三跳路径"""
+        # 检查所有跳数
+        fee1 = None
+        for f in self.FEE_TIERS:
+            if self.get_pool(token_in, base1, f) != "0x0000000000000000000000000000000000000000":
+                fee1 = f
+                break
+        
+        fee2 = None
+        for f in self.FEE_TIERS:
+            if self.get_pool(base1, base2, f) != "0x0000000000000000000000000000000000000000":
+                fee2 = f
+                break
+        
+        fee3 = None
+        for f in self.FEE_TIERS:
+            if self.get_pool(base2, token_out, f) != "0x0000000000000000000000000000000000000000":
+                fee3 = f
+                break
+        
+        if fee1 and fee2 and fee3:
+            return {
+                "tokens": [token_in, base1, base2, token_out],
+                "fees": [fee1, fee2, fee3]
+            }
+        return None
+
     def get_quote(self, params: Dict) -> Dict:
-        """获取多路径报价信息，并返回最优路径"""
+        """获取多路径报价信息，并返回最优路径（并行处理）"""
         try:
             token_in = params["fromTokenAddress"]
             token_out = params["toTokenAddress"]
@@ -352,19 +457,7 @@ class UniswapClient:
                 matching_paths = [p for p in all_possible_paths if "-".join([f"{p['tokens'][i]}-{p['fees'][i]}" for i in range(len(p['fees']))] + [p['tokens'][-1]]) == path_id]
                 if matching_paths:
                     selected_path = matching_paths[0]
-                    if len(selected_path["tokens"]) == 2:
-                        path_quote = self.get_quote_for_path(
-                            selected_path["tokens"][0], 
-                            selected_path["tokens"][1], 
-                            amount_in, 
-                            selected_path["fees"][0]
-                        )
-                    else:
-                        path_quote = self.get_quote_for_multi_path(
-                            selected_path["tokens"],
-                            selected_path["fees"],
-                            amount_in
-                        )
+                    path_quote = self._parallel_get_quote(selected_path, amount_in)
                     paths = [path_quote]
                 else:
                     raise ValidationError(f"Invalid path ID: {path_id}")
@@ -376,26 +469,19 @@ class UniswapClient:
                     raise ValidationError(f"Invalid fee tier {fee}. Supported tiers: {self.FEE_TIERS}")
                 paths = [self.get_quote_for_path(token_in, token_out, amount_in, fee)]
             
-            # 否则，查询所有可能的路径
+            # 否则，并行查询所有可能的路径
             else:
-                paths = []
-                
-                # 获取直接路径的报价
-                for fee in self.FEE_TIERS:
-                    path_quote = self.get_quote_for_path(token_in, token_out, amount_in, fee)
-                    if path_quote["toAmount"] != "0":
-                        paths.append(path_quote)
-                
-                # 获取多跳路径的报价
-                for path_info in all_possible_paths:
-                    if len(path_info["tokens"]) > 2:  # 多跳路径
-                        path_quote = self.get_quote_for_multi_path(
-                            path_info["tokens"],
-                            path_info["fees"],
-                            amount_in
-                        )
-                        if path_quote["toAmount"] != "0":
-                            paths.append(path_quote)
+                with ThreadPoolExecutor(max_workers=min(len(all_possible_paths), 10)) as executor:
+                    future_to_path = {
+                        executor.submit(self._parallel_get_quote, path_info, amount_in): path_info
+                        for path_info in all_possible_paths
+                    }
+                    
+                    paths = []
+                    for future in as_completed(future_to_path):
+                        quote = future.result()
+                        if quote["toAmount"] != "0":
+                            paths.append(quote)
             
             if not paths or all(p["toAmount"] == "0" for p in paths):
                 raise ProviderError(f"No valid route found for {token_in} to {token_out}")
@@ -416,7 +502,6 @@ class UniswapClient:
                 "allPaths": paths  # 返回所有可能的路径，以供参考
             }
         except ValidationError as e:
-            # Re-raise validation errors
             raise e
         except Exception as e:
             logger.error(f"Failed to get quote: {str(e)}")
