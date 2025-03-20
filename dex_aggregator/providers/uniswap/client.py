@@ -590,7 +590,7 @@ class UniswapClient:
                     'value': amount_in if is_native_token else 0,
                     'nonce': nonce,
                     'chainId': int(self.chain_id),
-                    'maxFeePerGas': base_fee * 1.2 + priority_fee,  # 基础费用 + 优先费用
+                    'maxFeePerGas': int(base_fee * 1.2 + priority_fee),  # 基础费用 + 优先费用
                     'maxPriorityFeePerGas': priority_fee,
                     'type': 2  # EIP-1559 交易类型
                 }
