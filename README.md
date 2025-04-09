@@ -16,7 +16,7 @@
 - 完整的错误处理和日志记录
 - Web3 工具集成
 - 自动处理代币授权
-- 支持多个 DEX 聚合器(当前支持 OKX(EVM,Solana)、Uniswap V3、PancakeSwap)
+- 支持多个 DEX 聚合器(当前支持 OKX(EVM,Solana)、Uniswap V3、PancakeSwap、Jupiter、Raydium)
 
 ## 安装
 
@@ -53,6 +53,35 @@ tx_hash = dex.swap(
 )
 ```
 
+### Solana Jupiter 示例
+
+```python
+from dex_aggregator.core.factory import DexFactory
+
+# 创建 Jupiter Provider 实例
+dex = DexFactory.create_provider("jupiter")
+
+# 获取 SOL -> USDC 的报价
+quote = dex.get_quote(
+    chain_id="501",  # Solana 链 ID
+    from_token="11111111111111111111111111111111",  # SOL
+    to_token="EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",  # USDC
+    amount="0.001",  # 交易数量
+    slippage="0.5"  # 0.5% 滑点
+)
+
+# 执行交易并发送到指定接收地址
+tx_hash = dex.swap(
+    chain_id="501",
+    from_token="11111111111111111111111111111111",  # SOL
+    to_token="EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",  # USDC
+    amount="0.001",
+    recipient_address="ATEhXjPVGaBUFVMyvCWETS5R9ZPAh7ke6SX2tdsMqC5f",  # 接收地址
+    slippage="0.5",  # 0.5% 滑点
+    wait_for_confirmation=True  # 等待交易确认
+)
+```
+
 ### 查询支持的链和代币
 
 ```python
@@ -73,6 +102,17 @@ tokens = dex.client.get_token_list("1")  # Ethereum
 | Arbitrum | 42161 |
 | Optimism | 10 |
 | Avalanche | 43114 |
+| Solana | 501 |
+
+## 支持的 DEX 聚合器
+
+| 聚合器 | 支持链 | 说明 |
+|-------|-------|------|
+| OKX | EVM, Solana | 支持跨多条EVM链和Solana |
+| Uniswap V3 | EVM | 支持多条EVM链 |
+| PancakeSwap | EVM | 支持跨多条EVM链 |
+| Jupiter | Solana | Solana链上最大的DEX聚合器 |
+| Raydium | Solana | Solana链上知名的DEX协议 |
 
 ## 配置
 
@@ -116,6 +156,7 @@ WEB3_CONFIG = {
     "providers": {
         "1": "https://eth-mainnet.g.alchemy.com/v2/your-api-key",
         "56": "https://bsc-dataseed.binance.org",
+        "501": "https://api.mainnet-beta.solana.com",
         # ...
     }
 }
@@ -168,6 +209,10 @@ class NewDexProvider(IDexProvider):
 class DexFactory:
     _providers = {
         "okx": OKXProvider,
+        "uniswap": UniswapProvider,
+        "pancakeswap": PancakeSwapProvider,
+        "jupiter": JupiterProvider,
+        "raydium": RaydiumProvider,
         "new_dex": NewDexProvider
     }
 ```
